@@ -23,10 +23,22 @@ If the model file is not already available, Ultralytics will download `yolov8n.p
 
 ## How To Run
 
+### In VS Code
+
+1. Open this folder in VS Code.
+2. Install the Python extension if it is not already installed.
+3. Press `F5` and choose `Smart Traffic Demo: Webcam` or `Smart Traffic Demo: Video File`.
+
 ### Webcam input
 
 ```bash
 python main.py --source 0
+```
+
+If your Windows setup uses the Python launcher, this also works:
+
+```bash
+py main.py --source 0
 ```
 
 ### Video file input
