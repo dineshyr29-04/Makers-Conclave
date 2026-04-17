@@ -5,10 +5,11 @@ A beginner-friendly Smart Traffic Demo built with YOLOv8 and OpenCV.
 ## Features
 
 - Real-time vehicle detection with YOLOv8n
+- Real-time vehicle detection and tracking with YOLOv8
 - Supports webcam or a sample traffic video file
 - Detects only `car`, `bus`, `truck`, and `motorcycle`
 - Shows bounding boxes, labels, total vehicle count, traffic status, and recommended green time
-- Includes a bonus counting line and FPS display
+- Includes a counting line based on YOLOv8 track IDs and FPS display
 - Designed to be lightweight enough to try on a Raspberry Pi with the YOLOv8n model
 
 ## Installation
@@ -69,13 +70,15 @@ python main.py --source C:\\path\\to\\traffic_video.mp4
 ## Useful Options
 
 ```bash
-python main.py --source 0 --conf 0.4 --img-size 640 --max-width 960
+python main.py --source 0 --conf 0.4 --img-size 640 --max-width 960 --tracker bytetrack.yaml
 ```
 
 - `--conf` controls detection confidence.
 - `--img-size` controls inference resolution.
 - `--max-width` controls resize speed for faster processing.
 - `--line-ratio` changes the counting line position.
+- `--tracker` selects YOLOv8 tracker config (`bytetrack.yaml` or `botsort.yaml`).
+- `--device` sets inference device (`cpu`, `0`, `0,1`, etc.).
 
 ## Notes For Raspberry Pi
 
