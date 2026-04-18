@@ -12,278 +12,241 @@ from __future__ import annotations
 
 import argparse
 import os
-import time
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+
+"""
+Advanced Smart Traffic Management System Simulation using YOLOv8n
+Author: GitHub Copilot
+
+Features:
+- Real-time vehicle detection (YOLOv8n)
+- 2-lane simulation (LEFT, RIGHT)
+- Per-lane vehicle counting, bounding boxes, and lane divider
+- Adaptive traffic signal logic (GREEN/YELLOW/RED, per lane)
+- Green time adapts to density: LOW (<5): 15s, MEDIUM (5–15): 30s, HIGH (>15): 50s
+- Smooth transitions: Green → Yellow (3s) → Red
+- Draws traffic lights, highlights active lane, shows countdown, FPS, and system status
+- Optimized for real-time (frame resize, YOLOv8n)
+"""
 
 import cv2
 import numpy as np
+import time
+import argparse
 from ultralytics import YOLO
 
+# --- CONFIG ---
+VEHICLE_CLASSES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
+CLASS_COLORS = {"car": (80, 220, 120), "motorcycle": (255, 180, 0), "bus": (255, 120, 80), "truck": (80, 180, 255)}
+LANE_NAMES = ["LEFT", "RIGHT"]
+SIGNAL_COLORS = {"RED": (0, 0, 255), "YELLOW": (0, 255, 255), "GREEN": (0, 200, 0)}
+LANE_STATUS = {"ACTIVE": (0, 200, 0), "WAITING": (0, 0, 255)}
 
-VEHICLE_CLASSES = {
-    2: "car",
-    3: "motorcycle",
-    5: "bus",
-    7: "truck",
-}
-
-CLASS_COLORS = {
-    "car": (80, 220, 120),
-    "motorcycle": (255, 180, 0),
-    "bus": (255, 120, 80),
-    "truck": (80, 180, 255),
-}
-
-
-@dataclass
-class Detection:
-    bbox: Tuple[int, int, int, int]
-    class_id: int
-    class_name: str
-    confidence: float
-    centroid: Tuple[int, int]
-    track_id: Optional[int] = None
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Smart Traffic Demo using YOLOv8")
-    parser.add_argument("--source", default="0", help="Webcam index (0) or video file path")
+def parse_args():
+    parser = argparse.ArgumentParser(description="Smart Traffic Management System (YOLOv8)")
+    parser.add_argument("--source", default="sample_traffic.mp4", help="Video file or webcam index (default: sample_traffic.mp4)")
     parser.add_argument("--weights", default="yolov8n.pt", help="YOLOv8 weights file")
-    parser.add_argument("--img-size", type=int, default=640, help="Inference image size")
-    parser.add_argument("--conf", type=float, default=0.35, help="Confidence threshold")
-    parser.add_argument("--device", default="", help="Device for inference, e.g. cpu, 0, 0,1. Leave empty for auto")
-    parser.add_argument("--tracker", default="bytetrack.yaml", help="YOLOv8 tracker config (bytetrack.yaml or botsort.yaml)")
+    parser.add_argument("--img-size", type=int, default=800, help="Inference image size")
+    parser.add_argument("--conf", type=float, default=0.4, help="Detection confidence threshold")
     parser.add_argument("--max-width", type=int, default=960, help="Resize frame width for speed")
-    parser.add_argument("--line-ratio", type=float, default=0.6, help="Counting line position as a fraction of frame height")
     return parser.parse_args()
 
-
-def open_capture(source: str) -> cv2.VideoCapture:
-    if source.isdigit():
-        camera_index = int(source)
-        capture = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-        if not capture.isOpened():
-            capture = cv2.VideoCapture(camera_index)
-        return capture
+def open_capture(source):
+    if str(source).isdigit():
+        cap = cv2.VideoCapture(int(source), cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(int(source))
+        return cap
     return cv2.VideoCapture(source)
 
-
-def resize_frame(frame: np.ndarray, max_width: int) -> np.ndarray:
-    height, width = frame.shape[:2]
-    if width <= max_width:
+def resize_frame(frame, max_width):
+    h, w = frame.shape[:2]
+    if w <= max_width:
         return frame
-    scale = max_width / float(width)
-    new_size = (max_width, int(height * scale))
-    return cv2.resize(frame, new_size, interpolation=cv2.INTER_AREA)
+    scale = max_width / float(w)
+    return cv2.resize(frame, (max_width, int(h * scale)), interpolation=cv2.INTER_AREA)
 
+def get_lane_regions(width, height, num_lanes=2):
+    # Returns list of (x1, y1, x2, y2) for each lane
+    lane_width = width // num_lanes
+    return [(i * lane_width, 0, (i + 1) * lane_width, height) for i in range(num_lanes)]
 
-def traffic_profile(vehicle_count: int) -> Tuple[str, int, Tuple[int, int, int]]:
-    if vehicle_count < 5:
-        return "LOW TRAFFIC", 20, (0, 200, 0)
-    if vehicle_count <= 15:
-        return "MEDIUM TRAFFIC", 40, (0, 180, 255)
-    return "HIGH TRAFFIC", 60, (0, 0, 255)
+def get_density_label(count):
+    if count < 5:
+        return "LOW", 15
+    elif count <= 15:
+        return "MEDIUM", 30
+    else:
+        return "HIGH", 50
 
+def draw_lane_dividers(frame, num_lanes=2):
+    h, w = frame.shape[:2]
+    lane_width = w // num_lanes
+    for i in range(1, num_lanes):
+        x = i * lane_width
+        cv2.line(frame, (x, 0), (x, h), (200, 200, 200), 2, cv2.LINE_AA)
 
-def draw_panel(frame: np.ndarray, lines: List[str], bg_color: Tuple[int, int, int]) -> None:
+def draw_traffic_light(frame, center, state, radius=18):
+    # Draws a traffic light (red/yellow/green) at center
+    for idx, color in enumerate(["RED", "YELLOW", "GREEN"]):
+        offset = (idx - 1) * 2 * radius
+        c = (center[0], center[1] + offset)
+        fill = SIGNAL_COLORS[color] if state == color else (60, 60, 60)
+        cv2.circle(frame, c, radius, fill, -1)
+        cv2.circle(frame, c, radius, (40, 40, 40), 2)
+
+def draw_panel(frame, lines, pos=(10, 10), width=420, height=240, color=(0, 0, 0)):
     overlay = frame.copy()
-    cv2.rectangle(overlay, (10, 10), (400, 210), (0, 0, 0), -1)
-    cv2.rectangle(overlay, (10, 10), (400, 210), bg_color, 2)
+    cv2.rectangle(overlay, pos, (pos[0] + width, pos[1] + height), (0, 0, 0), -1)
+    cv2.rectangle(overlay, pos, (pos[0] + width, pos[1] + height), color, 2)
     cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
+    y = pos[1] + 38
+    for i, text in enumerate(lines):
+        font_scale = 0.7 if i == 0 else 0.6
+        thickness = 2 if i == 0 else 1
+        txt_color = (255, 255, 255) if i == 0 else color
+        cv2.putText(frame, text, (pos[0] + 18, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, txt_color, thickness, cv2.LINE_AA)
+        y += 32
 
-    y = 42
-    for index, text in enumerate(lines):
-        font_scale = 0.7 if index == 0 else 0.6
-        thickness = 2 if index == 0 else 1
-        color = (255, 255, 255) if index else bg_color
-        cv2.putText(frame, text, (24, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness, cv2.LINE_AA)
-        y += 30
-
-
-def annotate_detection(frame: np.ndarray, detection: Detection) -> None:
-    x1, y1, x2, y2 = detection.bbox
-    color = CLASS_COLORS.get(detection.class_name, (255, 255, 255))
-    label = f"{detection.class_name} {detection.confidence:.2f}"
-
+def draw_detection(frame, box, class_name, conf, color, track_id=None):
+    x1, y1, x2, y2 = box
     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+    label = f"{class_name} {conf:.2f}"
+    if track_id is not None:
+        label += f" #{track_id}"
     label_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
     label_top = max(y1 - label_size[1] - baseline - 6, 0)
     label_bottom = label_top + label_size[1] + baseline + 6
     cv2.rectangle(frame, (x1, label_top), (x1 + label_size[0] + 8, label_bottom), color, -1)
     cv2.putText(frame, label, (x1 + 4, label_bottom - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2, cv2.LINE_AA)
 
-
-def run_yolov8_tracking(
-    model: YOLO,
-    frame: np.ndarray,
-    img_size: int,
-    conf: float,
-    device: str,
-    tracker: str,
-) -> List[Detection]:
-    vehicle_ids = list(VEHICLE_CLASSES.keys())
-    device_arg: Optional[str] = device if device else None
-    results = model.track(
-        frame,
-        persist=True,
-        classes=vehicle_ids,
-        imgsz=img_size,
-        conf=conf,
-        device=device_arg,
-        tracker=tracker,
-        verbose=False,
-    )
-
-    if not results:
-        return []
-
-    boxes = results[0].boxes
-    detections: List[Detection] = []
-    if boxes is None:
-        return detections
-
-    for box in boxes:
-        class_id = int(box.cls.item())
-        if class_id not in VEHICLE_CLASSES:
-            continue
-
-        x1, y1, x2, y2 = [int(value) for value in box.xyxy[0].tolist()]
-        centroid = ((x1 + x2) // 2, (y1 + y2) // 2)
-        class_name = VEHICLE_CLASSES[class_id]
-        confidence = float(box.conf.item())
-        track_id = int(box.id.item()) if box.id is not None else None
-
-        detections.append(
-            Detection(
-                bbox=(x1, y1, x2, y2),
-                class_id=class_id,
-                class_name=class_name,
-                confidence=confidence,
-                centroid=centroid,
-                track_id=track_id,
-            )
-        )
-
-    return detections
-
-
-
-def main() -> None:
+def main():
     args = parse_args()
-
-    if not os.path.exists(args.weights):
-        print(f"Downloading or loading weights: {args.weights}")
-
     model = YOLO(args.weights)
-    device = args.device.strip()
-    counted_ids = set()
-    last_centroids: Dict[int, Tuple[int, int]] = {}
-
-    capture = open_capture(args.source)
-    if not capture.isOpened():
+    cap = open_capture(args.source)
+    if not cap.isOpened():
         raise SystemExit(f"Could not open source: {args.source}")
 
-    previous_time = time.time()
+    prev_time = time.time()
     smoothed_fps = 0.0
-
-    # Signal state variables
-    signal_is_green = True  # This lane starts green
-    signal_timer = 0.0
-    green_time = 20  # Initial value, will be updated
-    last_switch_time = time.time()
-    traffic_label = "LOW TRAFFIC"
-    traffic_color = (0, 200, 0)
+    lane_states = ["RED", "RED"]  # [LEFT, RIGHT]
+    lane_timers = [0, 0]
+    lane_green_times = [15, 15]
+    lane_density_labels = ["LOW", "LOW"]
+    active_lane = 0  # 0: LEFT, 1: RIGHT
+    signal_state = "GREEN"  # GREEN, YELLOW, RED
+    signal_timer = 0
+    yellow_duration = 3
+    switch_pending = False
+    countdown = 0
 
     while True:
-        success, frame = capture.read()
-        if not success:
+        ret, frame = cap.read()
+        if not ret:
             break
-
         frame = resize_frame(frame, args.max_width)
-        height, width = frame.shape[:2]
-        line_y = int(height * args.line_ratio)
+        h, w = frame.shape[:2]
+        lane_regions = get_lane_regions(w, h, 2)
+        draw_lane_dividers(frame, 2)
 
-        detections = run_yolov8_tracking(model, frame, args.img_size, args.conf, device, args.tracker)
-        active_track_ids = set()
-
-        for detection in detections:
-            annotate_detection(frame, detection)
-
-            if detection.track_id is None:
+        # --- Detection ---
+        results = model.track(frame, persist=True, classes=list(VEHICLE_CLASSES.keys()), imgsz=args.img_size, conf=args.conf, verbose=False)
+        boxes = results[0].boxes if results and results[0].boxes is not None else []
+        lane_counts = [0, 0]
+        lane_ids = [set(), set()]
+        for box in boxes:
+            class_id = int(box.cls.item())
+            if class_id not in VEHICLE_CLASSES:
                 continue
+            x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+            cx = (x1 + x2) // 2
+            lane_idx = 0 if cx < w // 2 else 1
+            lane_counts[lane_idx] += 1
+            if box.id is not None:
+                lane_ids[lane_idx].add(int(box.id.item()))
+            draw_detection(frame, (x1, y1, x2, y2), VEHICLE_CLASSES[class_id], float(box.conf.item()), CLASS_COLORS[VEHICLE_CLASSES[class_id]], box.id.item() if box.id is not None else None)
 
-            active_track_ids.add(detection.track_id)
-            previous_centroid = last_centroids.get(detection.track_id)
-            last_centroids[detection.track_id] = detection.centroid
+        total_count = sum(lane_counts)
+        for i in range(2):
+            lane_density_labels[i], lane_green_times[i] = get_density_label(lane_counts[i])
 
-            if previous_centroid is not None:
-                prev_y = previous_centroid[1]
-                current_y = detection.centroid[1]
-                crossed_line = (prev_y < line_y <= current_y) or (prev_y > line_y >= current_y)
-                if crossed_line and detection.track_id not in counted_ids:
-                    counted_ids.add(detection.track_id)
-
-        stale_ids = [track_id for track_id in last_centroids if track_id not in active_track_ids]
-        for stale_id in stale_ids:
-            del last_centroids[stale_id]
-
-        total_vehicle_count = len(detections)
-        # Only update traffic profile and green time if this lane is green
-        if signal_is_green:
-            traffic_label, green_time, traffic_color = traffic_profile(total_vehicle_count)
-
-        # Signal timer logic
+        # --- Traffic Logic ---
         now = time.time()
-        elapsed = now - last_switch_time
-        if signal_is_green and elapsed >= green_time:
-            signal_is_green = False
-            last_switch_time = now
-        elif not signal_is_green and elapsed >= 10:  # Red for 10s, then switch back
-            signal_is_green = True
-            last_switch_time = now
+        dt = now - prev_time
+        prev_time = now
+        smoothed_fps = dt if smoothed_fps == 0.0 else (0.9 * smoothed_fps + 0.1 * dt)
+        fps = 1.0 / max(smoothed_fps, 1e-6)
 
-        # Signal status text
-        this_lane_status = "GREEN" if signal_is_green else "RED"
-        other_lane_status = "RED" if signal_is_green else "GREEN"
-        this_lane_color = (0, 200, 0) if signal_is_green else (0, 0, 255)
-        other_lane_color = (0, 0, 255) if signal_is_green else (0, 200, 0)
+        # State machine for signals
+        if signal_state == "GREEN":
+            countdown = lane_green_times[active_lane] - int(lane_timers[active_lane])
+            lane_states[active_lane] = "GREEN"
+            lane_states[1 - active_lane] = "RED"
+            lane_timers[active_lane] += dt
+            if lane_timers[active_lane] >= lane_green_times[active_lane]:
+                signal_state = "YELLOW"
+                signal_timer = 0
+                switch_pending = True
+        elif signal_state == "YELLOW":
+            countdown = yellow_duration - int(signal_timer)
+            lane_states[active_lane] = "YELLOW"
+            lane_states[1 - active_lane] = "RED"
+            signal_timer += dt
+            if signal_timer >= yellow_duration:
+                signal_state = "RED"
+                lane_timers[active_lane] = 0
+                if switch_pending:
+                    active_lane = 1 - active_lane
+                    switch_pending = False
+        elif signal_state == "RED":
+            countdown = 1
+            lane_states[active_lane] = "RED"
+            lane_states[1 - active_lane] = "GREEN"
+            signal_state = "GREEN"
+            lane_timers[active_lane] = 0
 
-        current_time = time.time()
-        frame_time = current_time - previous_time
-        previous_time = current_time
-        fps = 1.0 / max(frame_time, 1e-6)
-        smoothed_fps = fps if smoothed_fps == 0.0 else (0.9 * smoothed_fps + 0.1 * fps)
+        # --- UI Drawing ---
+        # Draw traffic lights for each lane
+        for i, (x1, y1, x2, y2) in enumerate(lane_regions):
+            center = (x1 + (x2 - x1) // 2, 60)
+            draw_traffic_light(frame, center, lane_states[i])
+            # Lane label
+            status = "ACTIVE" if i == active_lane and lane_states[i] == "GREEN" else "WAITING"
+            status_color = LANE_STATUS["ACTIVE"] if status == "ACTIVE" else LANE_STATUS["WAITING"]
+            cv2.putText(frame, f"{LANE_NAMES[i]} LANE {status}", (x1 + 10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2, cv2.LINE_AA)
+            # Lane vehicle count
+            cv2.putText(frame, f"Count: {lane_counts[i]}", (x1 + 10, 155), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
+            # Lane density
+            cv2.putText(frame, f"Density: {lane_density_labels[i]}", (x1 + 10, 185), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
 
-        cv2.line(frame, (0, line_y), (width, line_y), traffic_color, 2)
-        cv2.putText(frame, "COUNTING LINE", (12, max(line_y - 10, 25)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, traffic_color, 2, cv2.LINE_AA)
+        # Highlight most congested lane
+        most_congested = np.argmax(lane_counts)
+        x1, y1, x2, y2 = lane_regions[most_congested]
+        cv2.rectangle(frame, (x1, 0), (x2, h), (0, 255, 255), 4)
 
+        # Info panel
         draw_panel(
             frame,
             [
-                f"Vehicle Count: {total_vehicle_count}",
-                f"Status: {traffic_label}",
-                f"Signal: {this_lane_status}",
-                f"Other Lane: {other_lane_status}",
-                f"Green Time: {green_time}s",
-                f"FPS: {smoothed_fps:.1f}",
-                f"Line Crossings: {len(counted_ids)}",
+                f"Total Vehicles: {total_count}",
+                f"Active Lane: {LANE_NAMES[active_lane]}",
+                f"Signal: {lane_states[active_lane]}",
+                f"Countdown: {countdown}s",
+                f"LEFT: {lane_counts[0]} | RIGHT: {lane_counts[1]}",
+                f"FPS: {fps:.1f}",
             ],
-            this_lane_color,
+            pos=(10, h-250),
+            width=420,
+            height=220,
+            color=SIGNAL_COLORS[lane_states[active_lane]]
         )
 
-        # Optionally, show the other lane's signal as a small indicator
-        cv2.circle(frame, (380, 30), 14, other_lane_color, -1)
-        cv2.putText(frame, other_lane_status, (360, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, other_lane_color, 2, cv2.LINE_AA)
-
-        cv2.imshow("Smart Traffic Demo", frame)
+        cv2.imshow("Smart Traffic Management System", frame)
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):
             break
-
-    capture.release()
+    cap.release()
     cv2.destroyAllWindows()
-
 
 if __name__ == "__main__":
     main()
+            
