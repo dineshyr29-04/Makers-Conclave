@@ -88,8 +88,8 @@ def traffic_profile(vehicle_count: int) -> Tuple[str, int, Tuple[int, int, int]]
 
 def draw_panel(frame: np.ndarray, lines: List[str], bg_color: Tuple[int, int, int]) -> None:
     overlay = frame.copy()
-    cv2.rectangle(overlay, (10, 10), (400, 180), (0, 0, 0), -1)
-    cv2.rectangle(overlay, (10, 10), (400, 180), bg_color, 2)
+    cv2.rectangle(overlay, (10, 10), (400, 210), (0, 0, 0), -1)
+    cv2.rectangle(overlay, (10, 10), (400, 210), bg_color, 2)
     cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
 
     y = 42
@@ -168,6 +168,7 @@ def run_yolov8_tracking(
     return detections
 
 
+
 def main() -> None:
     args = parse_args()
 
@@ -185,6 +186,14 @@ def main() -> None:
 
     previous_time = time.time()
     smoothed_fps = 0.0
+
+    # Signal state variables
+    signal_is_green = True  # This lane starts green
+    signal_timer = 0.0
+    green_time = 20  # Initial value, will be updated
+    last_switch_time = time.time()
+    traffic_label = "LOW TRAFFIC"
+    traffic_color = (0, 200, 0)
 
     while True:
         success, frame = capture.read()
@@ -220,7 +229,25 @@ def main() -> None:
             del last_centroids[stale_id]
 
         total_vehicle_count = len(detections)
-        traffic_label, green_time, traffic_color = traffic_profile(total_vehicle_count)
+        # Only update traffic profile and green time if this lane is green
+        if signal_is_green:
+            traffic_label, green_time, traffic_color = traffic_profile(total_vehicle_count)
+
+        # Signal timer logic
+        now = time.time()
+        elapsed = now - last_switch_time
+        if signal_is_green and elapsed >= green_time:
+            signal_is_green = False
+            last_switch_time = now
+        elif not signal_is_green and elapsed >= 10:  # Red for 10s, then switch back
+            signal_is_green = True
+            last_switch_time = now
+
+        # Signal status text
+        this_lane_status = "GREEN" if signal_is_green else "RED"
+        other_lane_status = "RED" if signal_is_green else "GREEN"
+        this_lane_color = (0, 200, 0) if signal_is_green else (0, 0, 255)
+        other_lane_color = (0, 0, 255) if signal_is_green else (0, 200, 0)
 
         current_time = time.time()
         frame_time = current_time - previous_time
@@ -236,12 +263,18 @@ def main() -> None:
             [
                 f"Vehicle Count: {total_vehicle_count}",
                 f"Status: {traffic_label}",
+                f"Signal: {this_lane_status}",
+                f"Other Lane: {other_lane_status}",
                 f"Green Time: {green_time}s",
                 f"FPS: {smoothed_fps:.1f}",
                 f"Line Crossings: {len(counted_ids)}",
             ],
-            traffic_color,
+            this_lane_color,
         )
+
+        # Optionally, show the other lane's signal as a small indicator
+        cv2.circle(frame, (380, 30), 14, other_lane_color, -1)
+        cv2.putText(frame, other_lane_status, (360, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, other_lane_color, 2, cv2.LINE_AA)
 
         cv2.imshow("Smart Traffic Demo", frame)
         key = cv2.waitKey(1) & 0xFF
