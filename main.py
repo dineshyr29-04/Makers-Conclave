@@ -136,6 +136,8 @@ def main():
     signal_state = "GREEN"  # GREEN, YELLOW, RED
     signal_timer = 0
     yellow_duration = 3
+    min_red_time = 2  # Minimum red time to avoid rapid switching
+    red_timer = 0
     switch_pending = False
     countdown = 0
 
@@ -151,7 +153,6 @@ def main():
         # --- Detection ---
         results = model.track(frame, persist=True, classes=list(VEHICLE_CLASSES.keys()), imgsz=args.img_size, conf=args.conf, verbose=False)
         boxes = results[0].boxes if results and results[0].boxes is not None else []
-        lane_counts = [0, 0]
         lane_ids = [set(), set()]
         for box in boxes:
             class_id = int(box.cls.item())
@@ -160,11 +161,12 @@ def main():
             x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
             cx = (x1 + x2) // 2
             lane_idx = 0 if cx < w // 2 else 1
-            lane_counts[lane_idx] += 1
+            # Use unique track IDs for perfect counting
             if box.id is not None:
                 lane_ids[lane_idx].add(int(box.id.item()))
             draw_detection(frame, (x1, y1, x2, y2), VEHICLE_CLASSES[class_id], float(box.conf.item()), CLASS_COLORS[VEHICLE_CLASSES[class_id]], box.id.item() if box.id is not None else None)
 
+        lane_counts = [len(lane_ids[0]), len(lane_ids[1])]
         total_count = sum(lane_counts)
         for i in range(2):
             lane_density_labels[i], lane_green_times[i] = get_density_label(lane_counts[i])
@@ -176,54 +178,63 @@ def main():
         smoothed_fps = dt if smoothed_fps == 0.0 else (0.9 * smoothed_fps + 0.1 * dt)
         fps = 1.0 / max(smoothed_fps, 1e-6)
 
-        # State machine for signals
-        if signal_state == "GREEN":
-            countdown = lane_green_times[active_lane] - int(lane_timers[active_lane])
-            lane_states[active_lane] = "GREEN"
-            lane_states[1 - active_lane] = "RED"
-            lane_timers[active_lane] += dt
-            if lane_timers[active_lane] >= lane_green_times[active_lane]:
-                signal_state = "YELLOW"
-                signal_timer = 0
-                switch_pending = True
-        elif signal_state == "YELLOW":
-            countdown = yellow_duration - int(signal_timer)
-            lane_states[active_lane] = "YELLOW"
-            lane_states[1 - active_lane] = "RED"
-            signal_timer += dt
-            if signal_timer >= yellow_duration:
-                signal_state = "RED"
-                lane_timers[active_lane] = 0
-                if switch_pending:
-                    active_lane = 1 - active_lane
-                    switch_pending = False
-        elif signal_state == "RED":
-            countdown = 1
-            lane_states[active_lane] = "RED"
-            lane_states[1 - active_lane] = "GREEN"
-            signal_state = "GREEN"
-            lane_timers[active_lane] = 0
+        # --- Improved State Machine ---
+        # Always select the most congested lane for green
+        most_congested = np.argmax(lane_counts)
+        # If both lanes are empty, keep current state
+        if lane_counts[0] == 0 and lane_counts[1] == 0:
+            pass  # No vehicles, keep current state
+        else:
+            if signal_state == "GREEN":
+                # If a more congested lane appears, prepare to switch after yellow
+                if active_lane != most_congested and lane_counts[most_congested] > lane_counts[active_lane]:
+                    signal_state = "YELLOW"
+                    signal_timer = 0
+                    switch_pending = True
+                else:
+                    countdown = lane_green_times[active_lane] - int(lane_timers[active_lane])
+                    lane_states[active_lane] = "GREEN"
+                    lane_states[1 - active_lane] = "RED"
+                    lane_timers[active_lane] += dt
+                    if lane_timers[active_lane] >= lane_green_times[active_lane]:
+                        signal_state = "YELLOW"
+                        signal_timer = 0
+                        switch_pending = True
+            elif signal_state == "YELLOW":
+                countdown = yellow_duration - int(signal_timer)
+                lane_states[active_lane] = "YELLOW"
+                lane_states[1 - active_lane] = "RED"
+                signal_timer += dt
+                if signal_timer >= yellow_duration:
+                    signal_state = "RED"
+                    red_timer = 0
+                    lane_timers[active_lane] = 0
+                    if switch_pending:
+                        active_lane = most_congested
+                        switch_pending = False
+            elif signal_state == "RED":
+                countdown = min_red_time - int(red_timer)
+                lane_states[active_lane] = "RED"
+                lane_states[1 - active_lane] = "GREEN"
+                red_timer += dt
+                if red_timer >= min_red_time:
+                    signal_state = "GREEN"
+                    lane_timers[active_lane] = 0
 
         # --- UI Drawing ---
-        # Draw traffic lights for each lane
         for i, (x1, y1, x2, y2) in enumerate(lane_regions):
             center = (x1 + (x2 - x1) // 2, 60)
             draw_traffic_light(frame, center, lane_states[i])
-            # Lane label
             status = "ACTIVE" if i == active_lane and lane_states[i] == "GREEN" else "WAITING"
             status_color = LANE_STATUS["ACTIVE"] if status == "ACTIVE" else LANE_STATUS["WAITING"]
             cv2.putText(frame, f"{LANE_NAMES[i]} LANE {status}", (x1 + 10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2, cv2.LINE_AA)
-            # Lane vehicle count
             cv2.putText(frame, f"Count: {lane_counts[i]}", (x1 + 10, 155), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
-            # Lane density
             cv2.putText(frame, f"Density: {lane_density_labels[i]}", (x1 + 10, 185), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
 
         # Highlight most congested lane
-        most_congested = np.argmax(lane_counts)
         x1, y1, x2, y2 = lane_regions[most_congested]
         cv2.rectangle(frame, (x1, 0), (x2, h), (0, 255, 255), 4)
 
-        # Info panel
         draw_panel(
             frame,
             [
