@@ -34,12 +34,16 @@ import time
 import argparse
 from ultralytics import YOLO
 
-# --- CONFIG ---
-VEHICLE_CLASSES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
-CLASS_COLORS = {"car": (80, 220, 120), "motorcycle": (255, 180, 0), "bus": (255, 120, 80), "truck": (80, 180, 255)}
+ # --- CONFIG ---
+# Add emergency vehicle class index if your model supports it (e.g., 21: "ambulance")
+VEHICLE_CLASSES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck", 21: "ambulance"}  # Add/adjust index for emergency vehicle
+CLASS_COLORS = {"car": (80, 220, 120), "motorcycle": (255, 180, 0), "bus": (255, 120, 80), "truck": (80, 180, 255), "ambulance": (255, 0, 255)}
 LANE_NAMES = ["LEFT", "RIGHT"]
 SIGNAL_COLORS = {"RED": (0, 0, 255), "YELLOW": (0, 255, 255), "GREEN": (0, 200, 0)}
 LANE_STATUS = {"ACTIVE": (0, 200, 0), "WAITING": (0, 0, 255)}
+
+# Set this to 0 for LEFT lane, 1 for RIGHT lane
+SELECTED_LANE = 0  # Change to 1 for RIGHT lane only
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Smart Traffic Management System (YOLOv8)")
@@ -141,6 +145,7 @@ def main():
     switch_pending = False
     countdown = 0
 
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -150,10 +155,11 @@ def main():
         lane_regions = get_lane_regions(w, h, 2)
         draw_lane_dividers(frame, 2)
 
-        # --- Detection ---
+        # --- Detection (Single Lane, Emergency Logic) ---
         results = model.track(frame, persist=True, classes=list(VEHICLE_CLASSES.keys()), imgsz=args.img_size, conf=args.conf, verbose=False)
         boxes = results[0].boxes if results and results[0].boxes is not None else []
         lane_ids = [set(), set()]
+        emergency_present = False
         for box in boxes:
             class_id = int(box.cls.item())
             if class_id not in VEHICLE_CLASSES:
@@ -161,97 +167,114 @@ def main():
             x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
             cx = (x1 + x2) // 2
             lane_idx = 0 if cx < w // 2 else 1
+            if lane_idx != SELECTED_LANE:
+                continue  # Only process selected lane
+            # Emergency vehicle logic
+            if VEHICLE_CLASSES[class_id] == "ambulance":
+                emergency_present = True
             # Use unique track IDs for perfect counting
             if box.id is not None:
                 lane_ids[lane_idx].add(int(box.id.item()))
             draw_detection(frame, (x1, y1, x2, y2), VEHICLE_CLASSES[class_id], float(box.conf.item()), CLASS_COLORS[VEHICLE_CLASSES[class_id]], box.id.item() if box.id is not None else None)
 
-        lane_counts = [len(lane_ids[0]), len(lane_ids[1])]
-        total_count = sum(lane_counts)
+        # Only keep counts and labels for the selected lane
+        lane_counts = [0, 0]
+        lane_counts[SELECTED_LANE] = len(lane_ids[SELECTED_LANE])
+        total_count = lane_counts[SELECTED_LANE]
         for i in range(2):
-            lane_density_labels[i], lane_green_times[i] = get_density_label(lane_counts[i])
+            if i == SELECTED_LANE:
+                lane_density_labels[i], lane_green_times[i] = get_density_label(lane_counts[i])
+            else:
+                lane_density_labels[i], lane_green_times[i] = ("N/A", 0)
 
-        # --- Traffic Logic ---
+        # --- Traffic Logic (Single Lane) ---
         now = time.time()
         dt = now - prev_time
         prev_time = now
         smoothed_fps = dt if smoothed_fps == 0.0 else (0.9 * smoothed_fps + 0.1 * dt)
         fps = 1.0 / max(smoothed_fps, 1e-6)
 
-        # --- Improved State Machine ---
-        # Always select the most congested lane for green
-        most_congested = np.argmax(lane_counts)
-        # If both lanes are empty, keep current state
-        if lane_counts[0] == 0 and lane_counts[1] == 0:
-            pass  # No vehicles, keep current state
+        # --- State Machine (Single Lane, Emergency Logic) ---
+        # Only operate on SELECTED_LANE
+        most_congested = SELECTED_LANE
+        # Emergency vehicle overrides all
+        if emergency_present:
+            # If emergency vehicle present, always green
+            signal_state = "GREEN"
+            lane_states[SELECTED_LANE] = "GREEN"
+            lane_states[1 - SELECTED_LANE] = "RED"
+            lane_timers[SELECTED_LANE] = 0
+            countdown = "EMERGENCY"
+        elif lane_counts[SELECTED_LANE] == 0:
+            # No vehicles, always red
+            signal_state = "RED"
+            lane_states[SELECTED_LANE] = "RED"
+            lane_states[1 - SELECTED_LANE] = "GREEN"
+            lane_timers[SELECTED_LANE] = 0
+            countdown = 0
         else:
             if signal_state == "GREEN":
-                # If a more congested lane appears, prepare to switch after yellow
-                if active_lane != most_congested and lane_counts[most_congested] > lane_counts[active_lane]:
+                countdown = lane_green_times[SELECTED_LANE] - int(lane_timers[SELECTED_LANE])
+                lane_states[SELECTED_LANE] = "GREEN"
+                lane_states[1 - SELECTED_LANE] = "RED"
+                lane_timers[SELECTED_LANE] += dt
+                if lane_timers[SELECTED_LANE] >= lane_green_times[SELECTED_LANE]:
                     signal_state = "YELLOW"
                     signal_timer = 0
                     switch_pending = True
-                else:
-                    countdown = lane_green_times[active_lane] - int(lane_timers[active_lane])
-                    lane_states[active_lane] = "GREEN"
-                    lane_states[1 - active_lane] = "RED"
-                    lane_timers[active_lane] += dt
-                    if lane_timers[active_lane] >= lane_green_times[active_lane]:
-                        signal_state = "YELLOW"
-                        signal_timer = 0
-                        switch_pending = True
             elif signal_state == "YELLOW":
                 countdown = yellow_duration - int(signal_timer)
-                lane_states[active_lane] = "YELLOW"
-                lane_states[1 - active_lane] = "RED"
+                lane_states[SELECTED_LANE] = "YELLOW"
+                lane_states[1 - SELECTED_LANE] = "RED"
                 signal_timer += dt
                 if signal_timer >= yellow_duration:
                     signal_state = "RED"
                     red_timer = 0
-                    lane_timers[active_lane] = 0
+                    lane_timers[SELECTED_LANE] = 0
                     if switch_pending:
-                        active_lane = most_congested
                         switch_pending = False
             elif signal_state == "RED":
                 countdown = min_red_time - int(red_timer)
-                lane_states[active_lane] = "RED"
-                lane_states[1 - active_lane] = "GREEN"
+                lane_states[SELECTED_LANE] = "RED"
+                lane_states[1 - SELECTED_LANE] = "GREEN"
                 red_timer += dt
                 if red_timer >= min_red_time:
                     signal_state = "GREEN"
-                    lane_timers[active_lane] = 0
+                    lane_timers[SELECTED_LANE] = 0
 
-        # --- UI Drawing ---
+        # --- UI Drawing (Single Lane) ---
         for i, (x1, y1, x2, y2) in enumerate(lane_regions):
+            if i != SELECTED_LANE:
+                continue
             center = (x1 + (x2 - x1) // 2, 60)
             draw_traffic_light(frame, center, lane_states[i])
-            status = "ACTIVE" if i == active_lane and lane_states[i] == "GREEN" else "WAITING"
+            status = "ACTIVE" if lane_states[i] == "GREEN" else "WAITING"
             status_color = LANE_STATUS["ACTIVE"] if status == "ACTIVE" else LANE_STATUS["WAITING"]
             cv2.putText(frame, f"{LANE_NAMES[i]} LANE {status}", (x1 + 10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2, cv2.LINE_AA)
             cv2.putText(frame, f"Count: {lane_counts[i]}", (x1 + 10, 155), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
             cv2.putText(frame, f"Density: {lane_density_labels[i]}", (x1 + 10, 185), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2, cv2.LINE_AA)
 
-        # Highlight most congested lane
-        x1, y1, x2, y2 = lane_regions[most_congested]
+        # Highlight selected lane
+        x1, y1, x2, y2 = lane_regions[SELECTED_LANE]
         cv2.rectangle(frame, (x1, 0), (x2, h), (0, 255, 255), 4)
 
         draw_panel(
             frame,
             [
                 f"Total Vehicles: {total_count}",
-                f"Active Lane: {LANE_NAMES[active_lane]}",
-                f"Signal: {lane_states[active_lane]}",
+                f"Lane: {LANE_NAMES[SELECTED_LANE]}",
+                f"Signal: {lane_states[SELECTED_LANE]}",
                 f"Countdown: {countdown}s",
-                f"LEFT: {lane_counts[0]} | RIGHT: {lane_counts[1]}",
+                f"Count: {lane_counts[SELECTED_LANE]}",
                 f"FPS: {fps:.1f}",
             ],
             pos=(10, h-250),
             width=420,
             height=220,
-            color=SIGNAL_COLORS[lane_states[active_lane]]
+            color=SIGNAL_COLORS[lane_states[SELECTED_LANE]]
         )
 
-        cv2.imshow("Smart Traffic Management System", frame)
+        cv2.imshow("Smart Traffic Management System - Single Lane", frame)
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):
             break
