@@ -49,9 +49,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Smart Traffic Management System (YOLOv8)")
     parser.add_argument("--source", default="sample_traffic.mp4", help="Video file or webcam index (default: sample_traffic.mp4)")
     parser.add_argument("--weights", default="yolov8n.pt", help="YOLOv8 weights file")
-    parser.add_argument("--img-size", type=int, default=800, help="Inference image size")
+    parser.add_argument("--img-size", type=int, default=1280, help="Inference image size (default: 1280)")
     parser.add_argument("--conf", type=float, default=0.4, help="Detection confidence threshold")
-    parser.add_argument("--max-width", type=int, default=960, help="Resize frame width for speed")
+    parser.add_argument("--max-width", type=int, default=1600, help="Resize frame width for speed (default: 1600)")
     return parser.parse_args()
 
 def open_capture(source):
@@ -194,26 +194,44 @@ def main():
         smoothed_fps = dt if smoothed_fps == 0.0 else (0.9 * smoothed_fps + 0.1 * dt)
         fps = 1.0 / max(smoothed_fps, 1e-6)
 
-        # --- State Machine (Single Lane, Emergency Logic) ---
-        # Only operate on SELECTED_LANE
+        # --- State Machine (Single Lane, Emergency Logic, 15-20 Vehicles for Green) ---
         most_congested = SELECTED_LANE
         # Emergency vehicle overrides all
         if emergency_present:
-            # If emergency vehicle present, always green
             signal_state = "GREEN"
             lane_states[SELECTED_LANE] = "GREEN"
             lane_states[1 - SELECTED_LANE] = "RED"
             lane_timers[SELECTED_LANE] = 0
             countdown = "EMERGENCY"
-        elif lane_counts[SELECTED_LANE] == 0:
-            # No vehicles, always red
-            signal_state = "RED"
-            lane_states[SELECTED_LANE] = "RED"
-            lane_states[1 - SELECTED_LANE] = "GREEN"
-            lane_timers[SELECTED_LANE] = 0
-            countdown = 0
-        else:
-            if signal_state == "GREEN":
+        elif 10 <= lane_counts[SELECTED_LANE] <= 15:
+            # Only allow green if 15-20 vehicles
+            if signal_state == "RED":
+                # Insert yellow phase before green
+                if signal_timer == 0:
+                    signal_state = "YELLOW"
+                    signal_timer = 0
+                    lane_states[SELECTED_LANE] = "YELLOW"
+                    lane_states[1 - SELECTED_LANE] = "RED"
+                    countdown = yellow_duration
+                else:
+                    countdown = yellow_duration - int(signal_timer)
+                    lane_states[SELECTED_LANE] = "YELLOW"
+                    lane_states[1 - SELECTED_LANE] = "RED"
+                    signal_timer += dt
+                    if signal_timer >= yellow_duration:
+                        signal_state = "GREEN"
+                        lane_timers[SELECTED_LANE] = 0
+                        signal_timer = 0
+            elif signal_state == "YELLOW":
+                countdown = yellow_duration - int(signal_timer)
+                lane_states[SELECTED_LANE] = "YELLOW"
+                lane_states[1 - SELECTED_LANE] = "RED"
+                signal_timer += dt
+                if signal_timer >= yellow_duration:
+                    signal_state = "GREEN"
+                    lane_timers[SELECTED_LANE] = 0
+                    signal_timer = 0
+            elif signal_state == "GREEN":
                 countdown = lane_green_times[SELECTED_LANE] - int(lane_timers[SELECTED_LANE])
                 lane_states[SELECTED_LANE] = "GREEN"
                 lane_states[1 - SELECTED_LANE] = "RED"
@@ -222,25 +240,20 @@ def main():
                     signal_state = "YELLOW"
                     signal_timer = 0
                     switch_pending = True
-            elif signal_state == "YELLOW":
-                countdown = yellow_duration - int(signal_timer)
-                lane_states[SELECTED_LANE] = "YELLOW"
-                lane_states[1 - SELECTED_LANE] = "RED"
-                signal_timer += dt
-                if signal_timer >= yellow_duration:
-                    signal_state = "RED"
-                    red_timer = 0
-                    lane_timers[SELECTED_LANE] = 0
-                    if switch_pending:
-                        switch_pending = False
-            elif signal_state == "RED":
-                countdown = min_red_time - int(red_timer)
+            else:
+                # Fallback to red
+                signal_state = "RED"
                 lane_states[SELECTED_LANE] = "RED"
                 lane_states[1 - SELECTED_LANE] = "GREEN"
-                red_timer += dt
-                if red_timer >= min_red_time:
-                    signal_state = "GREEN"
-                    lane_timers[SELECTED_LANE] = 0
+                lane_timers[SELECTED_LANE] = 0
+                countdown = 0
+        else:
+            # Not in 15-20 range, always red
+            signal_state = "RED"
+            lane_states[SELECTED_LANE] = "RED"
+            lane_states[1 - SELECTED_LANE] = "GREEN"
+            lane_timers[SELECTED_LANE] = 0
+            countdown = 0
 
         # --- UI Drawing (Single Lane) ---
         for i, (x1, y1, x2, y2) in enumerate(lane_regions):
