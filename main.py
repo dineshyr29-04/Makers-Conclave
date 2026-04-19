@@ -203,7 +203,7 @@ def main():
             lane_states[1 - SELECTED_LANE] = "RED"
             lane_timers[SELECTED_LANE] = 0
             countdown = "EMERGENCY"
-        elif 10 <= lane_counts[SELECTED_LANE] <= 15:
+        elif 5 <= lane_counts[SELECTED_LANE] <= 10:
             # Only allow green if 15-20 vehicles
             if signal_state == "RED":
                 # Insert yellow phase before green
