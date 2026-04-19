@@ -227,8 +227,9 @@ def main():
             countdown = "EMERGENCY"
             cycle_active = False
         elif cycle_active:
-            # Once yellow starts, lock through green and final yellow
-            if signal_state == "YELLOW":
+            # Once yellow starts, lock through green and final yellow, then always return to red
+            if signal_state == "YELLOW" and lane_timers[SELECTED_LANE] == 0:
+                # First yellow (before green)
                 countdown = yellow_duration - int(signal_timer)
                 lane_states[SELECTED_LANE] = "YELLOW"
                 lane_states[1 - SELECTED_LANE] = "RED"
@@ -245,7 +246,7 @@ def main():
                 if lane_timers[SELECTED_LANE] >= lane_green_times[SELECTED_LANE]:
                     signal_state = "YELLOW"
                     signal_timer = 0
-            elif signal_state == "YELLOW" and lane_timers[SELECTED_LANE] >= lane_green_times[SELECTED_LANE]:
+            elif signal_state == "YELLOW" and lane_timers[SELECTED_LANE] > 0:
                 # Final yellow after green
                 countdown = yellow_duration - int(signal_timer)
                 lane_states[SELECTED_LANE] = "YELLOW"
