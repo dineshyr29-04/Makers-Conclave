@@ -1,21 +1,40 @@
 # City Intelligence Platform
 ### Makers Conclave Demo
 
-An AI-powered unified city monitoring system for emergency vehicle routing and civic violation detection.
+A Government-Grade AI Platform for Unified City Monitoring, Traffic Preemption, and Civic Violation Detection.
 
 ---
 
-## Quick Start
+## 🗺️ What This Project Is
+
+This system acts as a **smart brain** for a city's camera network, processing footage in real-time to manage road conditions and public safety.
+
+### Core Modules:
+1. **🚨 Emergency Vehicle Routing**: Detects emergency vehicles using YOLOv8, extracts text ("AMBULANCE") and license plates using EasyOCR, and identifies flashing beacon lights. It then dynamically preempts traffic signals along the route, turning them green to clear traffic.
+2. **⚠️ Civic Violation Detection**: Detects littering and other civic offenses using temporal frame analysis to detect "dropping" actions. Automatically captures face crops, body shots, and license plates of nearby vehicles for municipal reports.
+
+---
+
+## 🏗️ Architecture
+
+- **Backend (`/backend`)**: FastAPI, Async PostgreSQL, Redis Pub/Sub, YOLOv8, MediaPipe, EasyOCR, OpenCV.
+- **Frontend (`/frontend`)**: React 19, Vite, Leaflet, Custom Design System, WebSockets.
+- **Infrastructure**: Docker for PostgreSQL and Redis.
+
+---
+
+## 🚀 Quick Start for Contributors
 
 ### Prerequisites
 - Python 3.10+
 - Node.js 18+
 - Docker & Docker Compose
 
-### 1. Start Databases
+### 1. Start Infrastructure
 ```bash
 docker-compose up -d
 ```
+*(Runs PostgreSQL on port 5433 and Redis on port 6380 to avoid local port conflicts).*
 
 ### 2. Setup Backend
 ```bash
@@ -28,15 +47,18 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ### 3. Setup Frontend
 ```bash
 cd frontend
+npm install
 npm run dev
 ```
 
 ### 4. Open Dashboard
-Navigate to **http://localhost:5173**
+Navigate to **http://localhost:5173** (or the port specified by Vite, e.g., 5174).
 
 ---
 
-## Demo Login Credentials
+## 🔑 Demo Login Credentials
+
+The backend automatically creates demo users on its first run:
 
 | Role | Username | Password |
 |------|----------|----------|
@@ -47,30 +69,24 @@ Navigate to **http://localhost:5173**
 
 ---
 
-## Sample Videos
-Place demo videos in `data/sample_videos/`:
-- `traffic1.mp4` — Used by CAM_001 (Emergency Vehicle Module)
-- `traffic2.mp4` — Used by CAM_002 (Littering Module)
+## 📹 Providing Sample Videos
 
-If videos are not present, the system will use the webcam (CAM_WEBCAM).
+To test the AI pipelines effectively, place demo videos in `data/sample_videos/`:
+- `traffic1.mp4` — Mapped to CAM_001 (Emergency Vehicle Module)
+- `traffic2.mp4` — Mapped to CAM_002 (Littering Module)
 
----
-
-## Modules
-
-### 🚨 Emergency Vehicle Routing
-- Detects ambulances, fire trucks, police vehicles
-- 3-pronged detection: YOLOv8 + OCR text + flash detection
-- Automatically preempts traffic signals along the route
-- Real-time alerts to Traffic Police HQ
-
-### ⚠️ Civic Violation Detection
-- Detects littering via temporal frame analysis
-- Captures face, body, and full-frame evidence
-- ANPR for nearby vehicle plates
-- Reports routed to Municipal Corp HQ
+*If these videos are not present, the system defaults to using the webcam (`CAM_WEBCAM`).*
 
 ---
 
-## Architecture
-See `backend/` for the FastAPI AI pipeline and `frontend/` for the React dashboard.
+## 🤝 Contribution Guidelines
+
+We welcome contributions to expand the platform!
+
+1. **Understand the Architecture**: Read `backend/README.md` and `frontend/README.md`.
+2. **Code Style**:
+   - Backend: Use type hints, async/await where possible, and document complex AI logic.
+   - Frontend: Adhere to the CSS variables in `index.css` to maintain the dark, glassmorphism UI.
+3. **Atomic Commits**: Group related changes logically and write descriptive commit messages.
+
+*Built for Makers Conclave.*

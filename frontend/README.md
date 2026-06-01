@@ -1,16 +1,41 @@
-# React + Vite
+# City Intelligence Platform - Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This directory contains the React + Vite frontend for the City Intelligence Platform. It provides a polished, role-based dashboard for city monitoring, integrating live camera feeds, WebSocket alerts, and a real-time city map.
 
-Currently, two official plugins are available:
+## Architecture & Tech Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **Framework**: React 19 + Vite for ultra-fast development and optimized builds.
+- **Styling**: Vanilla CSS with CSS Variables for a customized, glassmorphism design system. Modern UI with CSS animations.
+- **Routing**: `react-router-dom` for role-based protected routes (Super Admin, Traffic HQ, Municipal HQ).
+- **Maps**: `leaflet` and `react-leaflet` with free CartoDB Dark Matter tiles. No API tokens required.
+- **Networking**: 
+  - `axios` for standard REST API requests.
+  - Native WebSockets wrapped in a custom `useWebSocket` hook with auto-reconnection logic for real-time alerts.
 
-## React Compiler
+## Project Structure
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- `/src/assets` - Static assets and SVG icons.
+- `/src/components` - Reusable UI components (Alert Cards, Map, etc.).
+- `/src/hooks` - Custom React hooks (e.g., `useWebSocket`).
+- `/src/pages` - Page-level components corresponding to different routes (Login, SuperAdmin, TrafficPoliceHQ, MunicipalHQ).
+- `/src/services` - API client configurations and interceptors.
+- `index.css` - Global styles, design tokens, and utility classes.
 
-## Expanding the ESLint configuration
+## Development Setup
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+1. **Prerequisites**: Node.js 18+
+2. **Install Dependencies**:
+   ```bash
+   npm install
+   ```
+3. **Environment Setup**:
+   The frontend proxy (in `vite.config.js`) routes `/api` and `/api/*/ws` to `localhost:8000` (the backend server).
+4. **Run the Development Server**:
+   ```bash
+   npm run dev
+   ```
+
+## Contribution Guidelines
+
+- **Styling**: Always use the CSS variables defined in `index.css` for colors, spacing, and typography to ensure consistency across the application.
+- **Adding New Pages**: Create the page in `/src/pages`, then add the corresponding protected route in `App.jsx`. Use the layout patterns established in the existing dashboards.
