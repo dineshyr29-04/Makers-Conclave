@@ -1,0 +1,61 @@
+# ─── Environment & Secrets ────────────────────────────────────
+.env
+.env.local
+.env.production
+*.secret
+
+# ─── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# ─── Node / Frontend ──────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+*.local
+
+# ─── AI Models (large binary files) ──────────────────────────
+ai_models/*.pt
+ai_models/*.onnx
+ai_models/*.engine
+*.pt
+*.onnx
+
+# ─── Evidence / Data (generated at runtime) ──────────────────
+data/evidence/
+data/sample_videos/
+
+# ─── Logs ─────────────────────────────────────────────────────
+*.log
+logs/
+
+# ─── IDE ──────────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Docker volumes (local only) ─────────────────────────────
+.docker/
+
+# ─── Old files ────────────────────────────────────────────────
+backend/main_old.py
